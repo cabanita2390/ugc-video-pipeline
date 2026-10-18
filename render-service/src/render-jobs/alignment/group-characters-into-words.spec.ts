@@ -1,4 +1,4 @@
-import { CharacterAlignment, groupCharactersIntoWords } from './group-characters-into-words';
+import { CharacterAlignment, groupCharactersIntoWords } from './group-characters-into-words.js';
 
 /** Construye una alineación donde el carácter i dura de i*0.1 a (i+1)*0.1. */
 function alignmentOf(text: string): CharacterAlignment {

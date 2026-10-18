@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { CreateRenderJobDto } from './dto/create-render-job.dto';
-import type { RenderJobAccepted } from './interfaces/render-job-accepted.interface';
+import { CreateRenderJobDto } from './dto/create-render-job.dto.js';
+import type { RenderJobAccepted } from './interfaces/render-job-accepted.interface.js';
 
 @Injectable()
 export class RenderJobsService {

@@ -1,5 +1,5 @@
 import { ArrayNotEmpty, IsArray, IsNumber, IsString, Min, Validate } from 'class-validator';
-import { AlignmentArraysSameLengthConstraint } from '../validators/alignment-arrays-same-length.constraint';
+import { AlignmentArraysSameLengthConstraint } from '../validators/alignment-arrays-same-length.constraint.js';
 
 /**
  * Alineación por carácter tal como la devuelve ElevenLabs en

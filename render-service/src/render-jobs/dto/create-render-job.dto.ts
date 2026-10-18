@@ -8,8 +8,8 @@ import {
   Matches,
   ValidateNested,
 } from 'class-validator';
-import { CharacterAlignmentDto } from './character-alignment.dto';
-import { ScriptDto } from './script.dto';
+import { CharacterAlignmentDto } from './character-alignment.dto.js';
+import { ScriptDto } from './script.dto.js';
 
 /**
  * Payload que n8n envía a `POST /render-jobs`.

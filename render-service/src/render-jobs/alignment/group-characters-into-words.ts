@@ -1,4 +1,4 @@
-import type { CharacterAlignmentDto } from '../dto/character-alignment.dto';
+import type { CharacterAlignmentDto } from '../dto/character-alignment.dto.js';
 
 /** Formato del JSON `words` que consume la plantilla Hyperframes (`[{text,start,end}]`). */
 export interface WordTiming {
