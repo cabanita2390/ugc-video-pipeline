@@ -1,5 +1,8 @@
 # UGC Pipeline
 
+## Estado del proyecto
+- Lee PLAN.md al empezar. Al terminar un paso, actualiza su fila en la tabla de estado y ajusta la lista de pendientes. No dupliques ahí detalles técnicos: van en NOTES-*.md.
+
 ## Arquitectura
 - n8n (Docker, local) orquesta: OpenRouter (guion) → ElevenLabs (audio + timestamps) → POST a render-service.
 - render-service (NestJS, TypeScript strict) recibe el payload, lo inyecta en una plantilla Hyperframes (HTML/CSS + GSAP) y ejecuta `npx hyperframes render`.
