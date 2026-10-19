@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { groupCharactersIntoWords } from '../alignment/group-characters-into-words.js';
 import type { CreateRenderJobDto } from '../dto/create-render-job.dto.js';
@@ -39,7 +39,7 @@ export class JobWorkspaceService {
     private readonly ffprobe: FfprobeService,
   ) {}
 
-  /** Crea `<JOBS_DIR>/<jobId>/` listo para `hyperframes render`. Falla si el job ya existe. */
+  /** Deja `<JOBS_DIR>/<jobId>/` listo para `hyperframes render`. Falla si el job ya fue preparado. */
   async prepare(jobId: string, dto: CreateRenderJobDto): Promise<PreparedJob> {
     if (!JOB_ID_PATTERN.test(jobId)) {
       throw new Error(`jobId inválido para una carpeta: "${jobId}"`);
@@ -47,8 +47,11 @@ export class JobWorkspaceService {
     const ctx: JobLogContext = { job_id: jobId, ai_model_used: dto.ai_model_used };
     const jobDir = path.join(this.config.jobsDir, jobId);
 
-    await mkdir(this.config.jobsDir, { recursive: true });
-    await mkdir(jobDir); // sin `recursive`: EEXIST si el job ya existe.
+    // La carpeta puede existir ya (la cola escribe job.json al encolar); la plantilla no.
+    await mkdir(jobDir, { recursive: true });
+    if (await pathExists(path.join(jobDir, 'index.html'))) {
+      throw new Error(`El job ${jobId} ya fue preparado`);
+    }
     await cp(this.config.templateDir, jobDir, { recursive: true });
     logJobEvent(this.logger, ctx, 'workspace_created', { job_dir: jobDir });
 
@@ -83,6 +86,13 @@ export class JobWorkspaceService {
 
     return { jobDir, durationSeconds, wordCount: words.length };
   }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  return access(p).then(
+    () => true,
+    () => false,
+  );
 }
 
 /** Milisegundos redondeados hacia arriba, para no cortar el final del audio. */

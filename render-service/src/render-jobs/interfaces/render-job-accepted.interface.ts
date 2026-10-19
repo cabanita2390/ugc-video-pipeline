@@ -1,5 +1,5 @@
 export interface RenderJobAccepted {
   job_id: string;
-  status: 'accepted';
+  status: 'queued';
   ai_model_used: string;
 }

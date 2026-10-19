@@ -1,7 +1,7 @@
 # Preparación y ejecución del render
 
 Fecha: 2026-10-18 · Windows 11 · Node v22.23.2 · hyperframes 0.8.169 · CPU i5-1135G7 (8 hilos).
-Todavía no hay cola ni endpoints nuevos: `POST /render-jobs` sigue sin usar estos servicios.
+Actualizado el 2026-10-19 con la cola y los endpoints de consulta. Ver [Cola y endpoints](#cola-y-endpoints).
 
 ## Qué se añadió
 
@@ -22,7 +22,7 @@ Todavía no hay cola ni endpoints nuevos: `POST /render-jobs` sigue sin usar est
 ## Decisiones
 
 - **`run()` recibe un tercer argumento, `ctx` (`job_id` y `ai_model_used`).** La firma pedida era `run(jobDir, durationSeconds)`, pero la regla de AUDITORÍA exige `ai_model_used` en cada log, y el runner no tiene otra forma de conocerlo.
-- **Validación de `jobId`:** `^[A-Za-z0-9_-]{1,64}$`. Evita que el id salga de `JOBS_DIR` (`../x`). Si la carpeta del job ya existe, falla con `EEXIST`: `mkdir` va sin `recursive` y nunca se pisa un job.
+- **Validación de `jobId`:** `^[A-Za-z0-9_-]{1,64}$`. Evita que el id salga de `JOBS_DIR` (`../x`). La carpeta del job puede existir ya, porque la cola escribe `job.json` al encolar. Si ya contiene `index.html`, `prepare()` falla con "ya fue preparado" y nunca pisa un job.
 - **`data-duration`:** se redondea **hacia arriba** al milisegundo (`6.0123` → `6.013`) para no cortar el final del audio.
   - Solo se cambia en la etiqueta `<div id="root">`. Las capas hijas conservan su propio `data-duration`.
   - Si la plantilla no tiene exactamente un root con `data-duration`, falla en vez de adivinar.
@@ -58,7 +58,11 @@ Además:
 - Después de todas las pruebas, `Get-Process chrome-headless-shell,ffmpeg` daba 0.
 - `exit` y `close` del hijo llegan unos 30 ms después de `kill()`: los Chrome no retienen los pipes de stdio.
 
-**Conclusión:** con hyperframes 0.8.169, matar el proceso Node del CLI hace que sus Chrome y su ffmpeg terminen solos en menos de ~2 s. Probablemente se cierran al perder el pipe o la conexión con su padre. **No reproduje huérfanos.**
+**Conclusión:** con hyperframes 0.8.169, matar el proceso Node del CLI hace que sus Chrome y su ffmpeg terminen solos en menos de ~2 s. **No reproduje huérfanos.**
+
+Lo mismo pasa un nivel más arriba: al matar la app NestJS a mitad de render, el CLI y sus 24 Chrome desaparecen en menos de 1,5 s (ver [Cola y endpoints](#cola-y-endpoints)).
+
+La explicación más probable, que **no verifiqué en el código de libuv**: en Windows, libuv mete a los hijos de `spawn` en un Job Object con `KILL_ON_JOB_CLOSE`, así que al morir un proceso Node se van todos sus descendientes. Si alguna vez se usa `detached: true`, esto deja de cumplirse.
 
 Aun así, la búsqueda y el `taskkill /T /F` se quedan como red de seguridad:
 - Solo corren cuando vence el timeout.
@@ -101,12 +105,86 @@ Resultado:
   - Bytes del audio.
   - `data-duration` del root sin tocar las capas hijas.
   - `variables.json` exacto, con y sin `accent`.
-  - `EEXIST`, jobId inválido y error de ffprobe.
+  - Carpeta ya creada (con `job.json`) que se acepta, job ya preparado, jobId inválido y error de ffprobe.
   - También cubre `setRootDuration` y `formatDuration`.
+
+## Cola y endpoints
+
+### Flujo
+1. `POST /render-jobs` valida el DTO, genera un `job_id` (UUID v4) y escribe `jobs/<job_id>/job.json` en `queued`. Lo encola y responde **202** `{ job_id, status: 'queued', ai_model_used }` sin esperar al render (26 ms en la prueba real).
+2. `RenderQueueService` es una cola en memoria con **concurrencia 1**: un único `drain()` procesa los jobs en orden.
+3. Para cada job, el worker hace:
+   - `rendering` + `started_at`;
+   - `JobWorkspaceService.prepare`;
+   - `duration_seconds`;
+   - `HyperframesRunnerService.run`;
+   - `done` + `finished_at` + `render_ms`.
+4. Si falla, el job queda en `failed` con `finished_at` y `error`. `error` es la primera línea del mensaje, como máximo 300 caracteres; el detalle completo va al log.
+5. Un fallo no detiene la cola: sigue con el siguiente job.
+6. Al arrancar (`onModuleInit`, antes de aceptar peticiones), los `job.json` en `queued` o `rendering` pasan a `failed` con `error: 'interrupted by restart'`.
+
+### `job.json` (`JobStoreService`)
+- Campos: `job_id`, `status` (`queued|rendering|done|failed`), `ai_model_used`, `hook`, `created_at`, `started_at`, `finished_at`, `duration_seconds`, `render_ms`, `error`.
+  - Las fechas van en ISO UTC.
+  - Lo que aún no aplica va a `null`, no se omite.
+- Es la fuente de verdad: `GET` lee siempre del disco, no de memoria.
+- **Escritura atómica:** `job.json.<uuid>.tmp` + `rename`.
+  - En Windows, `rename` sobre un archivo existente lo reemplaza.
+  - Se reintenta hasta 5 veces ante `EPERM`/`EBUSY`/`EACCES` (antivirus o un lector abierto) y se borra el temporal si falla.
+- `read` valida la forma mínima (`job_id`, `status` válido, `ai_model_used`, `created_at`). Si no cuadra, falla en vez de devolver basura.
+
+### Endpoints
+| Endpoint | Respuesta |
+| --- | --- |
+| `POST /render-jobs` | 202 `{ job_id, status: 'queued', ai_model_used }` · 400 si el DTO es inválido |
+| `GET /render-jobs/:id` | 200 con el `job.json` · 404 si no existe · 400 si `id` no es UUID v4 (`ParseUUIDPipe`) |
+| `GET /render-jobs/:id/video` | 200 `video/mp4` (`StreamableFile`, con `Content-Length` y `Content-Disposition: inline`) solo si está `done` · 409 si está `queued`, `rendering` o `failed` · 404 si no existe, o si está `done` sin mp4 · 400 si el id es inválido |
+
+El `ParseUUIDPipe` además impide que el id salga de `JOBS_DIR`.
+
+### Otras decisiones
+- **`configureApp()`** (`src/configure-app.ts`): body parser de 10 MB + `ValidationPipe`. Lo usan `main.ts` y los e2e, así ya no se duplica.
+- **El payload completo, con el audio en base64 (hasta ~10 MB), vive en memoria** mientras el job está `queued`. Con concurrencia 1 y muchos jobs en espera, la memoria crece. Si eso pesa, el audio se puede escribir a disco al encolar.
+- **Eventos de log de la cola:** `job_queued`, `job_status_changed` (from/to), `job_started`, `job_done`, `job_failed`, `job_record_write_failed` y `job_interrupted_by_restart`. Todos llevan `job_id` y `ai_model_used`.
+
+### Tests
+- **`job-store.service.spec.ts`** (carpeta temporal):
+  - Escritura sin temporales residuales.
+  - `read` con `null` y con formato inválido.
+  - `failInterrupted` sobre queued/rendering/done/failed y sobre una carpeta sin `job.json`.
+  - `JOBS_DIR` inexistente.
+- **`render-queue.service.spec.ts`** (carpeta temporal + workspace/runner falsos con deferreds):
+  - Concurrencia 1: el segundo job sigue `queued` y su `prepare` no se llama hasta que termina el primero.
+  - Transiciones queued → rendering → done con `job.json` completo.
+  - Fallo de `run` → `failed` con error corto, y la cola continúa.
+  - Fallo de `prepare`.
+  - Recuperación tras reinicio.
+- **e2e** (`test/support/create-test-app.ts`): AppModule real con `JOBS_DIR` temporal y `JobWorkspaceService`/`HyperframesRunnerService` reemplazados por falsos que terminan bien, fallan o se quedan colgados. **No se lanza ni ffprobe ni hyperframes.** Casos:
+  - 202 queued + `job.json`.
+  - Los tres 400 del DTO.
+  - GET done y rendering.
+  - 404 y 400.
+  - Vídeo 200 (bytes, `Content-Type` y `Content-Length`), 409 sin terminar, 409 `failed`, 404 y 400.
+
+### Prueba real por HTTP (script temporal, no commiteado)
+- Levanté `node dist/main.js` con `JOBS_DIR` en el scratchpad y envié el POST con `spike/ugc-template/assets/voice.mp3` y la alineación reconstruida desde `spike/jobs/sample-variables.json`.
+  - **POST:** 202 en 26 ms.
+  - **Vídeo pedido inmediatamente:** 409.
+  - **Polling cada 1 s:** `rendering → done` en 34,9 s; `render_ms` 33 832.
+  - **Descarga:** 200 `video/mp4`, 377 371 bytes (coincide con `Content-Length`).
+  - **ffprobe:** **1080x1920, 6,0 s**, igual que el audio y que `duration_seconds`.
+  - **Ids inválidos:** `GET /render-jobs/no-es-uuid` → 400; vídeo de un UUID inexistente → 404.
+  - **Logs:** los 16 eventos JSON del job llevan `job_id` y `ai_model_used`.
+- **Reinicio a mitad de render:**
+  - Maté la app 3 s después del POST, con 24 `chrome-headless-shell` y el CLI vivos (`Get-CimInstance`).
+  - 1,5 s después quedaban 0 Chrome, 0 ffmpeg y 0 CLI.
+  - Al volver a arrancar, el job pasó a `failed` / `interrupted by restart`, y `started_at` y `duration_seconds` se conservaron.
+- **Variación de tiempos:** un render de 6 s tardó entre 16 y 34 s según la ejecución. El mismo audio con 4 caracteres de subtítulo tardó 16 s. Con los 10 subtítulos de la muestra, 31–34 s.
 
 ## Pendiente
 
-- Conectar `POST /render-jobs` → cola → `prepare` + `run`, y escribir un JSON de auditoría junto al mp4 con `ai_model_used`.
-- Limpiar los jobs: borrarlos o conservarlos según el resultado.
+- **Limpieza de jobs (no implementada a propósito):** hoy nunca se borra nada de `JOBS_DIR`. Hay que decidir la retención (p. ej. borrar `failed` tras N días y `done` tras descargarse o tras N días) y si se conserva solo `job.json` como auditoría. Lo mismo para las carpetas a medio preparar de jobs fallidos.
+- La cola se pierde al reiniciar: los jobs pendientes quedan en `failed` y n8n tiene que reenviarlos. Si hace falta reanudarlos, habría que persistir el payload (el audio) al encolar.
+- Sin límite de tamaño de cola ni backpressure: un `POST` siempre devuelve 202.
 - Medir con audios reales de 30–60 s, para ver si el timeout `30 + 10×d` sobra o falta.
 - `ProcessTreeService` en Linux/Docker: hoy `supported = false` fuera de Windows, así que solo se hace `kill()`.

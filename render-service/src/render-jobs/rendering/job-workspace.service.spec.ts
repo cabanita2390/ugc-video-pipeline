@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { CreateRenderJobDto } from '../dto/create-render-job.dto.js';
@@ -75,9 +75,11 @@ describe('JobWorkspaceService', () => {
     expect(JSON.parse(raw)).not.toHaveProperty('accent');
   });
 
-  it('falla si el job ya existe', async () => {
+  it('acepta la carpeta del job ya creada (con job.json) pero falla si ya fue preparado', async () => {
+    await mkdir(path.join(jobsDir, 'job-dup'));
+    await writeFile(path.join(jobsDir, 'job-dup', 'job.json'), '{}');
     await service.prepare('job-dup', makeDto());
-    await expect(service.prepare('job-dup', makeDto())).rejects.toMatchObject({ code: 'EEXIST' });
+    await expect(service.prepare('job-dup', makeDto())).rejects.toThrow(/ya fue preparado/);
   });
 
   it('rechaza jobIds que podrían salirse de JOBS_DIR', async () => {
